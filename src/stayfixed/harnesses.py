@@ -16,12 +16,12 @@ that harness's evidence when it arrives.
 A value also states its reach: for each enforcement surface stayfixed has (`Surface`), the tier at
 which that surface holds under this harness (`Tier`), or `None` where no tier is claimed there, and
 the evidence each rests on: what was observed, on which version, and where its record is. The
-README's table of what each agent enforces is held equal to these values by a test, and `doctor`'s
-`codex-trust` row reads them, so a measurement that moves a tier is one edit here.
+README's table of what each agent enforces is held equal to these values by a test, so a
+measurement that moves a tier is one edit here.
 
 A new harness is a value with a positive `detects`, its project-root and plugin-root variables,
-its `render`, its settings files, the places it reads hooks out of a Markdown frontmatter, its
-memory directory if it keeps one, and its `reach`. What follows still lives outside the registry,
+its `render`, its settings files, the places it reads hooks out of a Markdown frontmatter, and
+its `reach`. What follows still lives outside the registry,
 spelled for Claude Code or Codex, and a harness that differs from both in any of it is an edit
 there too. `tests/test_harnesses.py` holds the list to the code: every string in a module of the
 package that names a harness is pardoned there, each pardon by one of these items or as prose.
@@ -34,44 +34,54 @@ package that names a harness is pardoned there, each pardon by one of these item
   does not set `CLAUDE_PLUGIN_ROOT`, is an edit there: without that variable each command
   expands to `/hooks/run-hook.sh` and exits 127, which Claude Code reads as a non-blocking
   error, so no guard runs and nothing says so.
-- `hooks/run-hook.sh` takes the directory it enters from `CLAUDE_PROJECT_DIR` alone, before any
-  Python runs, so another root variable is an edit to its `root=` line and to the digest
+- `hooks/run-hook.sh` takes the directory it enters from `CLAUDE_PROJECT_DIR`, else from `git`,
+  before any Python runs, so another root variable is an edit to its `root=` line and to the digest
   `hooks/hashes.json` records for it (`scripts/release.py hashes`).
 - `hooks.api.DATA_ROOT_VARIABLES` names the variables the sink and `doctor` find the harness's
   data root by.
 - `doctor` runs the wrapper for its `wrapper` row under `CLAUDE`'s two root variables whichever
   harness is in use, with every variable under Claude Code's and Codex's prefixes taken out of its
   environment first; names `CLAUDE_PLUGIN_ROOT` in the remedy of the rows that find no plugin
-  root and `${CLAUDE_PLUGIN_DATA}` in the `diagnostics` row's; and reads `CODEX` by name in its
-  `codex-trust` row.
+  root and `${CLAUDE_PLUGIN_DATA}` in the `diagnostics` row's; and names Codex in the `cli-path`
+  row's sentence on what it does not substitute.
 - `setup` installs the plugin through each harness's own command-line verbs,
   `_MARKETPLACE_ADD` and `_PLUGIN_INSTALL` in `setup/run.py`, keyed by harness name, so another
   harness is another entry in each.
+- `attach` renders the overlay's hooks, skills and agents as a Claude Code plugin and installs it
+  with Claude Code's verbs, `PLUGIN_MARKETPLACE_ADD_LOCAL` and `PLUGIN_INSTALL_LOCAL` in
+  `attach.render`, and `detach` withdraws it with `PLUGIN_UNINSTALL_LOCAL` and
+  `PLUGIN_MARKETPLACE_REMOVE` beside them, so another harness is another render and other verbs.
 - `init` renders `CLAUDE.md`, Claude Code's pointer to `AGENTS.md`, whatever `[stayfixed] agents`
   lists (`project.templates`, from the template `claude.md`): a project that lists Codex alone
   gets it too.
-- The overlay spells each harness's half by name: its plugin manifests and `common/claude` and
-  `common/codex` (`overlay.layout`, re-exported by `overlay.api`, and the manifest directory
-  `overlay.create` probes for), and the per-project `claude` and `codex` directories,
-  `.codex/rules` and the directories it creates in a project, which `attach` reads and writes
-  (`attach.permissions`, `attach.write`). They are the overlay's layout as much as a harness's.
+- The overlay spells each harness's half by name: `common/claude` and `common/codex`
+  (`overlay.layout`, re-exported by `overlay.api`), and the per-project `claude` and `codex`
+  directories, `.codex/rules` and the directories it creates in a project, which `attach` reads
+  and writes (`attach.permissions`, `attach.write`). They are the overlay's layout as much as a
+  harness's.
 - `memory session-context` writes a bundle to a `SessionStart` entry's stdout as it is, never
   through a `render`, so a harness that reads that event's output in another shape is an edit
   there.
 - One hook output cap, `native_caps.hook_output_chars`, is Claude Code's and is applied under
   every harness.
+- `commit strip` gives way to Claude Code's `attribution.commit`, read off `CLAUDE.settings` under
+  the owner's home (`guards.commit`), and its message names it, so another harness's setting for
+  what its commits carry is an edit there.
+- The advice `setup --approval-boundary` prints is Claude Code's alone: `trust.boundary` spells
+  its managed-settings paths, its sandbox settings and its deny-rule grammar, and names it in the
+  one sentence every writer gives a write its sandbox refused. Another harness's sandbox is an
+  edit there.
 - The hook payload is read in Claude Code's schema, the canonical one (`CANONICAL`): its keys
   (`hook_event_name`, `tool_name`, `tool_input`, `session_id`, `run_in_background`), the tool
   name `Bash` and its event names are spelled across the `hooks` package (`hooks.dispatch`,
-  `hooks.api`, `hooks.policy`, `hooks.sink`), in `guards` and in the areas' hook handlers, so a
+  `hooks.api`, `hooks.sink`), in `guards` and in the areas' hook handlers, so a
   harness whose payload differs is an edit to each.
 
 Elsewhere, code that needs a harness fact asks this registry: `doctor` walks every value's
 `settings` and `local_settings` for hook entries and every value's `hooked` places for skills,
 commands and agents, reads `CLAUDE.settings` for the machine's settings file and the plugin-root
 variables off every value; `setup` reads the machine's settings file off `CLAUDE.settings` too;
-`attach` merges into the one file `CLAUDE.local_settings` names; and `memory` links a store into
-the directory `CLAUDE.memory_dir` names, whichever harnesses a project lists.
+and `attach` merges into the one file `CLAUDE.local_settings` names.
 
 A name `[stayfixed] agents` lists and no harness answers to is counted, never refused and never
 printed: the list is repository-authored, and a project may name a harness a later stayfixed
@@ -103,10 +113,8 @@ class Rendition:
 class Surface(StrEnum):
     """Where stayfixed enforces something, by how it reaches a session."""
 
-    # A hook that refuses a command before it runs: `bg-cleanup`.
-    GUARDS = "session guards"
-    # A hook that adds context and refuses nothing: the test-hygiene note, the standing rules,
-    # the volatile notes.
+    # A hook that adds context and refuses nothing: the background-cleanup hints, the
+    # test-hygiene note, the standing rules, the volatile notes.
     NOTICES = "session notices"
     # The bug, documentation, plan, commit and trail checks, run by the reusable workflow.
     GATES = "repository gates"
@@ -117,7 +125,6 @@ class Surface(StrEnum):
 class Tier(StrEnum):
     """How strongly a surface holds under a harness."""
 
-    BLOCKS = "blocks in the session"
     CONTEXT = "context only"
     CI = "CI only"
     INSTRUCTIONS = "instructions only"
@@ -127,8 +134,8 @@ class Tier(StrEnum):
 class Reach:
     """One surface under one harness."""
 
-    # `None`: no tier is claimed for the surface under this harness, which the README's table and
-    # `doctor`'s `codex-trust` row print as "not verified".
+    # `None`: no tier is claimed for the surface under this harness, which the README's table
+    # prints as "not verified".
     tier: Tier | None
     # The observation the tier rests on and where its record is: a public record, named, or, for a
     # measurement whose record is not in this repository, the date it was made and that it is not
@@ -162,9 +169,10 @@ class Harness:
     # The variable this harness names the project root in, if any. Every registered value's is
     # asked, in `project_root_variables`' order, whichever harness was detected (`detect`).
     project_dir_env: str | None
-    # How the hook's stdout is shaped: (event name, joined context) -> stdout. Context only:
-    # no rendering carries a decision, because a deny travels on the exit code.
-    render: Callable[[str, str], str]
+    # How the hook's stdout is shaped: (event name, joined context, notice) -> stdout, where the
+    # notice is what the person is shown and the context what the model reads. Never a decision:
+    # no handler refuses a call.
+    render: Callable[[str, str, str], str]
     # Every `Surface`, each with the tier it holds at under this harness. Compared, and left out
     # of the hash: a mapping has none, and the other fields already tell two harnesses apart.
     reach: Mapping[Surface, Reach] = field(hash=False)
@@ -181,23 +189,19 @@ class Harness:
     hooked: tuple[Hooked, ...] = ()
 
 
-@dataclass(frozen=True, kw_only=True)
-class MemoryHarness(Harness):
-    """A harness that keeps a project's own memory, which `memory` links a store into: Claude Code
-    alone, so the fact is this type's and not every value's, and `memory` reads it off `CLAUDE`
-    with no question whether there is one."""
-
-    # Where this harness keeps a project's own memory, relative to the home directory, given the
-    # project's resolved path.
-    memory_dir: Callable[[str], str]
-
-
-def hook_specific_output(event_name: str, context: str) -> str:
+def hook_specific_output(event_name: str, context: str, notice: str) -> str:
     """Claude Code's hook answer: the whole string a hook writes to stdout, which the harness
-    caps, rather than the field inside it."""
+    caps, rather than the field inside it.
+
+    `notice` is for the person, and goes out as `systemMessage`, which Claude Code shows a person
+    in a terminal on `SessionStart` and never hands the model (`hooks.dispatch.NOTICE_EVENT` says
+    where that was measured); the model's copy is the caller's to put into `context`. An empty one
+    adds no key."""
     payload: dict[str, Any] = {"hookSpecificOutput": {"hookEventName": event_name}}
     if context:
         payload["hookSpecificOutput"]["additionalContext"] = context
+    if notice:
+        payload["systemMessage"] = notice
     return json.dumps(payload)
 
 
@@ -237,13 +241,6 @@ def _claude_rule(profile: Profile, rules: str) -> Rendition:
     )
 
 
-def _claude_memory(project: str) -> str:
-    """`.claude/projects/<slug>/memory`, where Claude Code keeps a project's memory under the home
-    directory: the slug is the project's resolved path with `/` and `.` as `-`."""
-    slug = project.replace("/", "-").replace(".", "-")
-    return f"{CLAUDE_DIR}/projects/{slug}/memory"
-
-
 # The gates are the reusable workflow's, which runs the same under every agent: this repository's
 # smoke workflow runs it against a fixture project, and no agent takes part.
 _IN_CI = Reach(
@@ -270,7 +267,7 @@ _CODEX_HOOKS_UNVERIFIED = Reach(
     measured_on="Codex CLI 0.162.0-alpha.17.2",
 )
 
-CLAUDE = MemoryHarness(
+CLAUDE = Harness(
     name="claude",
     marker_dir=CLAUDE_DIR,
     settings=(f"{CLAUDE_DIR}/settings.json",),
@@ -280,12 +277,6 @@ CLAUDE = MemoryHarness(
     render=hook_specific_output,
     reach=MappingProxyType(
         {
-            Surface.GUARDS: Reach(
-                Tier.BLOCKS,
-                "a guard's exit 2 stopped the command unrun "
-                f"({_P0_SPIKES}, the fail-closed matrix)",
-                measured_on="Claude Code 2.1.261",
-            ),
             Surface.NOTICES: Reach(
                 Tier.CONTEXT,
                 "a SessionStart hook's output arrived as context "
@@ -312,7 +303,6 @@ CLAUDE = MemoryHarness(
         Hooked(f"{CLAUDE_DIR}/commands", None),
         Hooked(f"{CLAUDE_DIR}/agents", None),
     ),
-    memory_dir=_claude_memory,
 )
 # Codex reads `AGENTS.md` from the root down and no other instruction file, and follows no
 # import; `.codex/rules` holds command-execution policy, not instructions. The region is how a
@@ -333,7 +323,6 @@ CODEX = Harness(
     render=hook_specific_output,
     reach=MappingProxyType(
         {
-            Surface.GUARDS: _CODEX_HOOKS_UNVERIFIED,
             Surface.NOTICES: _CODEX_HOOKS_UNVERIFIED,
             Surface.GATES: _IN_CI,
             Surface.METHOD: Reach(
@@ -365,6 +354,20 @@ HARNESSES: tuple[Harness, ...] = (CLAUDE, CODEX)
 # measurement covers -- is read as strictly as the merge that rewrites it. A path relative to the
 # file's root, so `~/.claude/settings.json` is the first of these under the home directory.
 LENIENT_SETTINGS: frozenset[str] = frozenset((*CLAUDE.settings, *CLAUDE.local_settings))
+# The leading UTF-8 byte-order mark Claude Code reads past in a file of `LENIENT_SETTINGS`.
+BYTE_ORDER_MARK = "\ufeff"
+
+
+def lenient_settings(text: str) -> str:
+    """The text of a Claude Code settings file of `LENIENT_SETTINGS` as Claude Code reads it: past a
+    leading UTF-8 byte-order mark.
+
+    The one reading of that mark for every reader of such a file: the hook entries' walk
+    (`scaffold.judged_entries`) and `setup`'s merge into the user settings file, the last from the
+    file's bytes as UTF-8. Refused, the mark stopped `setup` on an owner's own file the harness
+    reads.
+    """
+    return text.removeprefix(BYTE_ORDER_MARK)
 
 
 def project_root_variables() -> tuple[str, ...]:
@@ -397,8 +400,7 @@ def detect(env: Mapping[str, str], payload: Mapping[str, Any] | None) -> Harness
     `hooks.dispatch.read_event`, into an event that does not say which value was detected; the
     project root, which decides which configuration loads, is the first variable set among every
     registered value's, `CANONICAL`'s first, whichever value was detected
-    (`project_root_variables`); and a deny is exit 2 with its reason on stderr under every
-    harness, and never reaches a `render`.
+    (`project_root_variables`); and no handler refuses a call under any harness.
 
     **A harness gets a `render` of its own only together with a detection signal a repository
     cannot steer.** While every value renders through `CANONICAL.render`, what this answers

@@ -18,7 +18,7 @@ Which harness a hook runs under is not vocabulary of this kind, and no handler i
 - `EVENTS` is the list a handler's event must come from: `registry.discover` refuses any other,
   and an area that needs a new event adds it here, beside the vocabulary its handlers use.
 - `HandlerFn` is `Handler.run`'s type. `Handler` is what `guards/hooks.py` and
-  `memory/hooks.py` build, and a consumer that holds one before registering it — a table of
+  `attach/hooks.py` build, and a consumer that holds one before registering it — a table of
   handlers, a decorator, a test double — cannot annotate the callable without this name.
 - `Sink` is the protocol `dispatch.py` takes and `sink.py` implements, and `NullSink` is the
   degradation it falls back to when there is no harness data root. `doctor` reports on the tree
@@ -41,12 +41,11 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
-from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
-    from stayfixed.config.schema import Config
+    from stayfixed.config.session import SessionConfig
 
 __all__ = [
     "DATA_ROOT_VARIABLES",
@@ -55,13 +54,11 @@ __all__ = [
     "DIRECTORY",
     "EVENTS",
     "MARKERS",
-    "Decision",
     "Handler",
     "HandlerFn",
     "HookEvent",
     "HookResult",
     "NullSink",
-    "Policy",
     "Sink",
     "data_root",
     "first_set",
@@ -83,15 +80,6 @@ EVENTS = (
 )
 
 
-class Policy(StrEnum):
-    OPEN = "open"
-    CLOSED = "closed"
-
-
-class Decision(StrEnum):
-    DENY = "deny"
-
-
 @dataclass(frozen=True)
 class HookEvent:
     name: str
@@ -107,21 +95,20 @@ class HookEvent:
 @dataclass
 class HookResult:
     context: str | None = None
-    decision: Decision | None = None
-    reason: str | None = None
 
 
-HandlerFn = Callable[[HookEvent, "Config | None"], HookResult]
+HandlerFn = Callable[[HookEvent, "SessionConfig"], HookResult]
 
 
 @dataclass(frozen=True)
 class Handler:
     name: str
     event: str
-    policy: Policy
     run: HandlerFn
-    # Handlers stay pure `(event, config) -> result`, so a handler that must run once
-    # per context declares the marker key and the dispatcher owns the bookkeeping.
+    # Handlers stay pure `(event, session) -> result`, so a handler that must run once
+    # per context declares the marker key and the dispatcher owns the bookkeeping. The session is
+    # `config.session.SessionConfig`: a handler about the project answers nothing when its
+    # `config` is `None`, and a guard judges with any.
     once_key: str | None = None
 
 

@@ -17,9 +17,15 @@ equivalent variables "is not a partial defence, it is a redirect with a longer n
 
 The third rule is a write and lives in `write.py`.
 
+**Whether a checkout is bound is this machine's answer, not the overlay's.** The binding is the id
+in the checkout's git common directory and the machine's record of it (`stayfixed.binding`); the
+overlay's `projects/<name>/project.toml` keeps the remote and the first attach's date for the
+owner to read, and decides nothing.
+
 **The two remotes on a `Binding` are repository-authored bytes** (principle 5), and nothing
-here puts either into a summary, a `Result.data` or a refusal message. What is computed *about*
-them — one of `memory.store.binding_state`'s four labels — is stayfixed's own and may be printed.
+here puts either into a refusal message or a `Result.data`. They reach a line only inside
+`note`, through `printed.quoted` (`memory.store.origin_note`). The state is one of
+`memory.store.binding_state`'s two labels, stayfixed's own, and may be printed.
 """
 
 from __future__ import annotations
@@ -30,76 +36,35 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from stayfixed import fsops
-from stayfixed.config.loader import UNPARSEABLE, load, toml_position
+from stayfixed.binding import bound_project
+from stayfixed.config.loader import load
 from stayfixed.config.overlay import overlay_root
-from stayfixed.config.paths import PathEscape, PathUnasked, contained
-from stayfixed.config.schema import OVERLAY_MODE, Config
+from stayfixed.config.reading import UNPARSEABLE, toml_position
+from stayfixed.config.schema import Config
 from stayfixed.errors import Failure, Refusal
 from stayfixed.fsops import said
 from stayfixed.gitenv import origin_remote
 from stayfixed.memory.api import (
+    BOUND,
     PROJECT_RECORD,
     PROJECTS,
     STORE_DIR,
     binding_state,
     link_sources,
+    origin_note,
     permitted_roots,
     read_binding_record,
 )
 
 # The binding's states are `memory.store`'s (`BINDING_STATES`), and so is the one classifier that
 # decides between them (`binding_state`): this module answered the same question with a copy of
-# its own that called a checkout with no `origin` a mismatch.
+# its own once, and the two came to disagree.
 # One sentence, said by both `binding_for` and `read_binding`: neither reads an overlay root
 # that was not recorded through `stayfixed setup`.
 NO_OVERLAY = (
     "no overlay root is recorded in the machine configuration, so there is nothing to bind "
     "this repository to; run `stayfixed setup` first"
 )
-# `memory.groups` is one of the four fields `config.paths`' own docstring names as bounded by no
-# grammar, so a group name is repository-authored bytes the same way `project.name` is —
-# refused rather than quoted back. Fixed text, naming the two keys and never the value.
-# Distinct from `attach.write.GROUP_ESCAPES`, which is the same shape for a different escape (a
-# group leaving the *overlay's* share, at write time); this one is `unlinked_groups`' own, so
-# the session-start handler this seam exists for and `unlinked_groups`' own caller cannot spell
-# it twice between them.
-#
-# **"does not name a subdirectory of" and not "does not stay inside".** The rule `contained`
-# reads off the combined `<paths.memory>/<group>` is `fsops.checked_components`, and since that
-# rule started refusing an empty component and `.` there are four refusable spellings the old
-# sentence was simply false about: `""` and `"."` resolve to `paths.memory` itself, and `"a/"`
-# and `"a//b"` land squarely inside it. Each of those is an entry an owner mistypes, and each
-# was told its entry had left a directory it had not left -- so the one action the sentence
-# suggested, moving the group back inside `paths.memory`, was already done. What every refusable
-# spelling does have in common is that it is not the name of a directory under `paths.memory`:
-# not the escaping ones, not the odd ones, and not `paths.memory` itself, which is where the
-# notes live rather than a group in them.
-MEMORY_GROUP_ESCAPES = (
-    "a memory.groups entry does not name a subdirectory of this project's paths.memory, or "
-    "paths.memory is itself a symlink, so the entry is refused rather than counted"
-)
-# Said instead when no symlink is on the way and a directory on it cannot be asked whether it is
-# one: the sentence above would name a cause the entry does not have. `{fault}` is the system's
-# words for what stopped the question, never a path.
-MEMORY_GROUP_UNASKED = (
-    "a memory.groups entry's place under this project's paths.memory cannot be checked for a "
-    "symlink ({fault}), so the entry is refused rather than counted"
-)
-
-
-# The first refusal `attach` owes, and `--check` with it. `worktree.attach_main` asks the same
-# question as the floor under this one, but it runs after every write `attach` makes: refused
-# there, a `local-only` project had `.gitignore`'s region, `.codex/rules/`, the settings merge,
-# the ledger and, in the overlay, `project.toml` and its group directories, and `doctor` then
-# read the ledger as "attached". `memory.mode` is one of the loader's enumerated values, so it
-# prints.
-NOT_OVERLAY = (
-    "memory.mode is {mode!r}, so this repository keeps its own note store and there is nothing "
-    f"in an overlay to bind it to; only a repository whose memory.mode is {OVERLAY_MODE!r} is "
-    "attached"
-)
-
-
 # The refusal for a `project.name` no directory under the overlay can carry. The overlay root is
 # the owner's and prints; the name is the repository's (see `_recorded`), so it is the shape.
 SHARE_CANNOT_EXIST = (
@@ -115,7 +80,7 @@ SHARE_CANNOT_EXIST = (
 PATH_CANNOT_EXIST = (
     "{projects}/<this project's name>/ would hold a path, or a name in one, longer than this "
     "machine allows -- the binding record " + PROJECT_RECORD + ", the notes index or a memory "
-    "group's directory -- so attach could not record the binding or link the notes there; "
+    "group's directory -- so attach could not record the binding or compose the notes there; "
     "choose a shorter `name` under [project] in stayfixed.toml, or shorter memory.groups entries"
 )
 
@@ -190,17 +155,17 @@ def refuse_unless_share_can_exist(binding: Binding, config: Config) -> None:
     and in `--check` as well. A share that is absent is fine: `attach` creates it.
 
     **Nor a name whose directory fits under the longest path while a path `attach` makes inside it
-    does not** -- the binding record, and every path the link tree points at there
+    does not** -- the binding record, and every path the composed store links point at there
     (`link_sources`: the index, which the first attach writes, and each group's directory, which
     it creates). Each is written or created through descriptors, which no path length bounds, so
     the write succeeds; but every reader names it by its whole path. `_recorded` answers a record
     past the longest one with "no record", so the binding would be written and then read as
     unbound for ever; and the system refuses a link whose target is that long, so building the
-    link tree ended in an internal error (`PartialLink`, "File name too long") after the ignore
-    region, the settings merge, the ledger and the record -- with `--check` answering 0 before it,
-    because the overlay's sources it reads are shorter than a long group's directory. The paths
-    are the ones the tree is built from, and not suffix lengths counted here, so a group added to
-    the tree is asked about without a second list to keep. Each is asked with `lstat`, whether or
+    store would end in a failure after the ignore region, the settings merge, the ledger and the
+    record -- with `--check` answering 0 before it, because the overlay's sources it reads are
+    shorter than a long group's directory. The paths are the ones the store is built from, and not
+    suffix lengths counted here, so a group added to it is asked about without a second list to
+    keep. Each is asked with `lstat`, whether or
     not the share is there yet: the system refuses a path past the longest one before it looks
     anything up, so the answer is about the spelling and never about what the overlay holds.
     `common/memory` is outside the share and its length is not the name's, so it is not asked.
@@ -280,21 +245,16 @@ def _too_long(path: Path) -> bool:
     return False
 
 
-def not_overlay(config: Config) -> str | None:
-    """The refusal a repository whose notes do not live in the overlay earns, or `None`: one
-    spelling for `attach`, which raises it, and `attach --check`, which reports it."""
-    if config.memory.mode == OVERLAY_MODE:
-        return None
-    return NOT_OVERLAY.format(mode=config.memory.mode)
-
-
 @dataclass(frozen=True)
 class Binding:
-    """What the overlay records about this repository, and what this repository says it is.
+    """Whether this machine binds this repository, and what the overlay and the checkout say.
 
     `remote` is this checkout's `origin` and `recorded` is what the overlay wrote down for
-    `project`; both are repository-authored and neither is safe to print. `state` is this
-    module's own answer and is.
+    `project`; both are repository-authored and neither is printed raw. `state` is this
+    module's own answer and prints. `note` is `memory.store.origin_note`'s, said beside the
+    state: the `origin` against the one the machine's record holds for a bound checkout, or the
+    overlay's record for one about to be bound, and `None` where it is that one or where nothing
+    is recorded to compare with.
     """
 
     project: str
@@ -303,17 +263,17 @@ class Binding:
     remote: str | None
     recorded: str | None
     state: str
+    note: str | None = None
+    # The project this machine's record binds the checkout to now, or `None` where it binds none.
+    bound: str | None = None
+    # Why the overlay's record could not be read, where it could not: it binds nothing, so this
+    # is said and stops nothing, and the record is compared with nothing and never written over.
+    fault: str | None = None
 
 
 class UnreadableRecord(Failure):
-    """The overlay's binding record for this project is there and cannot be read.
-
-    A `Failure`, so `attach`, `--check` and the session-start handler stop on it as on any other.
-    Its own class for the one caller that may not: `doctor`'s grant question, where the record is
-    the one `project.name` picks out of `projects/` -- a name the repository commits -- so a record
-    that cannot be read must not be able to turn that question into "could not be asked"
-    (`attach.doctor._granted_commands`).
-    """
+    """The overlay's binding record for this project is there and cannot be read: `_bound` says it
+    as the binding's `fault` and goes on, since the record binds nothing."""
 
 
 def _record(overlay: Path, project: str) -> Path:
@@ -321,13 +281,11 @@ def _record(overlay: Path, project: str) -> Path:
 
 
 def _recorded(overlay: Path, project: str) -> str | None:
-    """The remote the overlay bound to this project, or `None` when it has bound none.
+    """The remote the overlay recorded for this project, or `None` when it has recorded none.
 
-    A record that exists and cannot be read raises `UnreadableRecord` rather than answering `None`.
-    `memory.store._bound` answers "unreadable" for the same file, which is right for the hook
-    path — it degrades closed and says to repair the file, then run `stayfixed attach`. Here
-    "no record" is the state that invites a rebind, so a broken record has to stop the run
-    instead of quietly becoming a first attach.
+    A record that exists and cannot be read raises `UnreadableRecord` rather than answering `None`:
+    "no record" is the state in which `attach` writes one, so a broken record must not read as
+    that and be written over.
     """
     record = _record(overlay, project)
     # The shape and not the path: `record` embeds `project.name`, which is repository-authored
@@ -387,13 +345,21 @@ def _bound(root: Path, config: Config, overlay: Path) -> Binding:
     """
     project = config.project.name
     store = permitted_roots(overlay, project)[1]
-    recorded = _recorded(overlay, project)
+    try:
+        recorded, fault = _recorded(overlay, project), None
+    except UnreadableRecord as exc:
+        recorded, fault = None, str(exc)
     origin = origin_remote(root)
-    return Binding(project, overlay, store, origin, recorded, binding_state(recorded, origin))
+    found = bound_project(root)
+    state = binding_state(found, project)
+    against = found.origin if found is not None and state == BOUND else recorded
+    note = origin_note(against, origin) if state == BOUND or against is not None else None
+    earlier = found.project if found is not None else None
+    return Binding(project, overlay, store, origin, recorded, state, note, earlier, fault)
 
 
 def read_binding(
-    root: Path, *, store: Path, machine: Path | None, config: Config | None = None
+    root: Path, *, store: Path | None, machine: Path | None, config: Config | None = None
 ) -> Binding:
     """The binding this repository would attach under, or a refusal that it may not.
 
@@ -402,18 +368,21 @@ def read_binding(
     protects against here, and the name becomes a directory under the overlay's `projects/`).
 
     `config` is loaded here only when the caller does not already hold one. `attach.check`
-    does -- it needs the same `Config` for `unlinked_groups` -- and a second load would read
+    does -- it needs the same `Config` for the run's gates -- and a second load would read
     `stayfixed.toml` and the machine file twice per `--check`, with the two halves free to
     disagree if the file changed in between. `binding_for` is the seam for a caller that has a
     `Config` and no `--store` to check; this is the seam for one that has both. For the same
     reason the overlay root is read once, and `--store` is checked against the root the binding
-    is then made under (`_bound`).
+    is then made under (`_bound`). `store` is `None` where the caller named none, and is then this
+    project's own directory in that overlay, derived and never read.
     """
     config = load(root, machine=machine) if config is None else config
     overlay = overlay_root(machine)
     if overlay is None:
         raise Refusal(NO_OVERLAY)
     expected = permitted_roots(overlay, config.project.name)[1]
+    if store is None:
+        return _bound(root, config, overlay)
     try:
         resolved: Path | None = fsops.resolved(store)
     except OSError:
@@ -430,39 +399,3 @@ def read_binding(
             f"from an argument"
         )
     return _bound(root, config, overlay)
-
-
-def unlinked_groups(root: Path, config: Config) -> tuple[str, ...]:
-    """The `memory.groups` entries that are real directories under `paths.memory`.
-
-    The anchor is `root` — the checkout the command was pointed at or the hook was handed,
-    never a value the repository chose — and a group `contained` refuses against it is raised,
-    not skipped: `paths.memory` may itself be a symlink (`validate_paths` allows the final
-    component), and then every group escapes at once. `attach` turns that into a refusal above
-    its first write; the handler turns it into one fixed line. `PathEscape` propagates as the
-    refusal it is, and both of those callers catch it by that type, but its message does not:
-    `group` and `paths.memory` are repository-authored, one of the four fields `config.paths`
-    names as bounded by no grammar, so `contained`'s own message — which would print the whole
-    escaping path — is replaced with `MEMORY_GROUP_ESCAPES` before it propagates.
-    """
-    resolved = root.resolve()
-    found: list[str] = []
-    for group in config.memory.groups:
-        try:
-            target = contained(
-                root,
-                f"{config.paths.memory}/{group}",
-                allow_final_symlink=True,
-                resolved_root=resolved,
-            )
-        except PathUnasked as exc:
-            raise PathUnasked(
-                MEMORY_GROUP_UNASKED.format(fault=exc.fault), fault=exc.fault
-            ) from exc
-        except PathEscape as exc:
-            # `group` and `config.paths.memory` are repository-authored, so the combined path
-            # `contained` refuses is refused again, fixed text and never quoted back.
-            raise PathEscape(MEMORY_GROUP_ESCAPES) from exc
-        if fsops.is_dir(target) and not fsops.is_symlink(target):
-            found.append(group)
-    return tuple(found)

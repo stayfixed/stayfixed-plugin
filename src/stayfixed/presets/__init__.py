@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import copy
 import re
 import tomllib
+from collections.abc import Mapping
+from functools import cache
 from importlib import resources
-from typing import Any
+from typing import Any, cast
 
 from stayfixed.errors import Failure
 
@@ -14,6 +17,10 @@ from stayfixed.errors import Failure
 # which no shipped name uses and the sentence below did not say.
 NAME = re.compile(r"\A[A-Za-z0-9_-]+\Z")
 NAME_RULE = "ASCII letters, digits, `-` and `_`"
+# The preset everything builds on that names none, or names one this build does not ship: a
+# document leaving `[stayfixed] preset` out, a session whose preset will not load, a repository with
+# no `stayfixed.toml`, and `setup` with no `--preset`.
+DEFAULT_PRESET = "recommended"
 
 
 def shipped_presets() -> list[str]:
@@ -46,8 +53,23 @@ def load_preset(name: str, *, key: str = "[stayfixed] preset") -> dict[str, Any]
         raise Failure(
             f"{key} names a preset this version of stayfixed does not ship; {available()}"
         )
+    # A copy of the one parse: a hook loads the preset more than once (the owner's layer, then the
+    # project's), and a caller that edits what it is handed edits no other caller's.
+    return copy.deepcopy(_parsed(name))
+
+
+@cache
+def _parsed(name: str) -> dict[str, Any]:
+    """The shipped preset `name`, parsed once per process; `load_preset` has held the name to
+    `shipped_presets()` before it asks."""
     resource = resources.files(__package__).joinpath(f"{name}.toml")
     return tomllib.loads(resource.read_text(encoding="utf-8"))
+
+
+def defaults_of(preset: Mapping[str, Any]) -> dict[str, Any]:
+    """The `[defaults]` of the loaded `preset`, by section: what a layer builds on where it sets
+    nothing, `{}` for a preset with none. Not a copy: `load_preset` hands every caller its own."""
+    return cast(dict[str, Any], preset.get("defaults", {}))
 
 
 def available() -> str:

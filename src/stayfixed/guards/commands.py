@@ -1,70 +1,21 @@
-"""The `guard`, `commit` and `test` groups.
-
-`guard bg-cleanup` is the fail-closed row: it reads one JSON object on stdin — a whole hook
-payload, or a bare `tool_input` — and refuses anything it cannot read with exit 2, because a
-guard that guessed at plain text would be guessing. A deny is a `Refusal` (2); the restore
-advisory is a finding (1); a clean command is 0.
-"""
+"""The `commit` and `test` groups."""
 
 from __future__ import annotations
 
 import argparse
-import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from stayfixed import fsops
 from stayfixed.areas import SubParsers
-from stayfixed.command import common_flags
+from stayfixed.command import command_owner, common_flags
 from stayfixed.config.loader import load
 from stayfixed.errors import Failure, Refusal
 from stayfixed.findings import listed
-from stayfixed.jsonobject import json_object
 from stayfixed.result import Result
 
 if TYPE_CHECKING:
     from stayfixed.config.schema import Config
-
-_UNREADABLE = "guard bg-cleanup reads one JSON object on stdin: a hook payload or a tool_input"
-_CLEAN = "no background leak and no trailing restore"
-
-
-_NOT_BASH = "not a Bash call; nothing to judge"
-
-
-def _tool_input(raw: str) -> dict[str, Any] | None:
-    """The Bash input to judge, or None for a whole payload naming another tool."""
-    # Through `jsonobject`, the one reader of a JSON object, so stdin nested past the parser or
-    # its depth bound, or holding an integer longer than the interpreter converts, is refused in
-    # the words every reader uses rather than ending the guard in an internal error.
-    payload = json_object(
-        raw or "",
-        "stdin",
-        error=lambda reason: Refusal(f"{_UNREADABLE}; {reason}"),
-        shape=lambda _: Refusal(_UNREADABLE),
-    )
-    if "tool_name" in payload and payload["tool_name"] != "Bash":
-        return None  # the handler is silent here too (`hooks.bash_command`)
-    tool_input = payload.get("tool_input", payload)
-    if not isinstance(tool_input, dict) or not isinstance(tool_input.get("command"), str):
-        raise Refusal(f"{_UNREADABLE}, and the object must carry a string `command`")
-    return tool_input
-
-
-def run_bg_cleanup(args: argparse.Namespace) -> Result:
-    from stayfixed.guards.bgcleanup import judge
-
-    tool_input = _tool_input(sys.stdin.read())
-    if tool_input is None:
-        return Result(_NOT_BASH, {"hint": None})
-    background = tool_input.get("run_in_background") is True
-    verdict = judge(str(tool_input["command"]), background=background)
-    if verdict.deny is not None:
-        raise Refusal(verdict.deny)
-    if verdict.hint is not None:
-        return Result(verdict.hint, {"hint": verdict.hint}, exit_code=1)
-    return Result(_CLEAN, {"hint": None})
-
 
 # Printed on every `commit check` failure, which is inside the CI gate's own output, so it may
 # only name commands that exist. The clause naming the installer was dropped while the hook
@@ -78,6 +29,19 @@ _STRIP_REMEDY = (
     "FILE` does the same to one message file, and `stayfixed setup --git-hooks` installs the "
     "hook that strips it before the commit exists."
 )
+
+# Fixed text and a count: what `commit strip` says when it keeps attribution lines it would have
+# stripped, because the person set what the harness's commits carry
+# (`harness_says_what_commits_carry`). Never begins "nothing to strip", the one line the hook keeps
+# quiet: a kept trailer is worth a line on the terminal, and a message with nothing to strip says
+# that instead, whatever the setting.
+GIVES_WAY = (
+    "kept {count} attribution line(s): Claude Code's attribution.commit setting in your own "
+    "settings says what a commit carries, so the message is left as it is"
+)
+# The one line the hook filters out (`githooks.HOOK_TEXT`'s `quiet`), and every earlier
+# release's hook with it.
+NOTHING_TO_STRIP = "nothing to strip"
 
 # git's own default for `core.commentChar` (the `prepare-commit-msg` comment block). Not read from
 # the repository's config: a value this module would feed straight into a line-prefix comparison is
@@ -139,7 +103,7 @@ def _split_trailing_comment_block(text: str) -> tuple[str, str]:
 def _root_and_config(args: argparse.Namespace) -> tuple[Path, Config]:
     root = Path(args.root).resolve()
     machine = Path(args.machine) if getattr(args, "machine", None) else None
-    return root, load(root, machine=machine)
+    return root, load(root, machine=machine, owner=command_owner(machine))
 
 
 def run_commit_check(args: argparse.Namespace) -> Result:
@@ -169,7 +133,12 @@ def run_commit_check(args: argparse.Namespace) -> Result:
 
 
 def run_commit_strip(args: argparse.Namespace) -> Result:
-    from stayfixed.guards.commit import offending_lines, strip_message
+    from stayfixed.config.machine import owner_home
+    from stayfixed.guards.commit import (
+        harness_says_what_commits_carry,
+        offending_lines,
+        strip_message,
+    )
 
     raw = str(args.file)
     if raw.startswith("-"):
@@ -197,8 +166,12 @@ def run_commit_strip(args: argparse.Namespace) -> Result:
     # A message that is *only* attribution would be emptied, which aborts the commit with a
     # confusing "empty message" error. Leave it alone and let CI explain.
     if not stripped_message.strip() or stripped_message == message:
-        return Result("nothing to strip", {"stripped": 0})
+        return Result(NOTHING_TO_STRIP, {"stripped": 0})
     count = len(offending_lines(message))
+    # Asked only once a line would go, so a message with nothing to strip says so whatever the
+    # setting, and the hook stays quiet on it.
+    if harness_says_what_commits_carry(owner_home()):
+        return Result(GIVES_WAY.format(count=count), {"stripped": 0})
     fsops.write_atomically(path, stripped_message + comment_block)
     return Result(f"stripped {count} attribution line(s) from {path}", {"stripped": count})
 
@@ -222,6 +195,11 @@ _FAILED = "the {name} profile's red-run hint failed: {kind}"
 _UNTOLD = "the {name} profile's red-run hint stopped its walk at a bound and could not tell"
 _UNJUDGED = ", so this tree cannot be judged"
 _NARROW = "; narrow `[ledger] code_roots` to the directories that hold code"
+# What the summary says after the uncommitted-change check's answer, in place of "tree is clean",
+# when no code root is left to walk: every profile's walk saw nothing, so its silence is no answer
+# about the tree. `assess` counts each entry left out; its inventory names it, and why.
+NO_ROOTS = "no [ledger] code_roots entry names a directory here, so no code root was walked"
+NO_CHANGE = "no uncommitted change"
 
 
 def run_test_hygiene(args: argparse.Namespace) -> Result:
@@ -247,9 +225,10 @@ def run_test_hygiene(args: argparse.Namespace) -> Result:
     # hint and detects nothing, so a Python project in a subdirectory gets the stale-bytecode
     # note after a failed run, and this command must not call the same tree clean.
     reports: dict[str, dict[str, int]] = {}
+    roots = contained_roots(root, config)
     for name, hint in ((name, hint) for name, hint in hints if hint is not None):
         try:
-            report, note = answer(hint, contained_roots(root, config))
+            report, note = answer(hint, roots)
         except NotText:
             raise Refusal(_WORDLESS.format(name=name) + _UNJUDGED) from None
         except Exception as exc:
@@ -270,6 +249,8 @@ def run_test_hygiene(args: argparse.Namespace) -> Result:
         f"; the {name} profile has nothing to report" for name in reports
     )
     summary = "; ".join(findings) or clean
+    if not roots:
+        summary = "; ".join([*(findings or [NO_CHANGE]), NO_ROOTS])
     data = {"dirty": dirty, "profiles": reports}
     return Result(summary, data, exit_code=1 if findings else 0)
 
@@ -296,11 +277,6 @@ def run_test_attribute(args: argparse.Namespace) -> Result:
 
 
 def register(groups: SubParsers) -> None:
-    guard = groups.add_parser("guard", help="fail-closed guards over a tool call")
-    guard_sub = guard.add_subparsers(dest="command", metavar="<command>")
-    bg = guard_sub.add_parser("bg-cleanup", help="judge a Bash call for a background leak")
-    bg.set_defaults(func=run_bg_cleanup)
-
     commit = groups.add_parser("commit", help="commit-message rules")
     commit_sub = commit.add_subparsers(dest="command", metavar="<command>")
     check = common_flags(

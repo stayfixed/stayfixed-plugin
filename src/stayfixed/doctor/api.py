@@ -16,17 +16,20 @@ one nobody can tell from a leftover:
   read by the consumer that gets a value from it. `tests/test_install_path.py` branches on
   `RED` and `SKIP` through this surface already.
 
-- `Row`, `Context`, `Claims` and `Contribution` are what an area's own `doctor.py` speaks: its
-  `register()` returns a `Contribution` of `(name, check)` pairs, each check takes the `Context`
-  and answers a `Row`, and `Claims` is what the area put into settings files. They are defined in
-  `doctor/model.py`, which imports nothing of any area, and published here because an area's
-  `doctor.py` is a consumer like any other.
-- `Wording` is the type of `Claims.wording`: an area that hands over claims hands over the words
-  `hook-entries` tells them in — its record, its source and the commands that repair them — and
-  a field whose type it could not import is one it could not fill.
+- `Row`, `Context` and `Contribution` are what an area's own `doctor.py` speaks: its
+  `register()` returns a `Contribution` of `(name, check)` pairs, and each check takes the
+  `Context` and answers a `Row`. They are defined in `doctor/model.py`, which imports nothing of
+  any area, and published here because an area's `doctor.py` is a consumer like any other.
 - `Status` is the type `Row.status` declares, for a check that decides its status before it
   builds its row, as an area's own check may: an annotation it could not import would be a type
   it could hold and not declare.
+- `MachineUnread` is one of the answers `Context.overlay_root` gives, a machine file that could
+  not be read: a row that reads the root cannot tell it from "no overlay recorded" without it,
+  and told as that, `pre-commit`, `overlay-requires` and `attached` said a file nobody could read
+  recorded nothing.
+- `NO_CONFIG_SKIP` is the skip of a row that reads the project configuration in a repository with
+  none: the areas' `attached` and `bundles` give it as the core's rows do, so one
+  sentence says one state, through `configured`.
 
 `plugin_root` is not here: nothing outside this area imports it, and the one test that reads it
 takes it from `stayfixed.doctor.checks`, its own area's module. Nor is `SETTINGS_FILES`, the
@@ -37,32 +40,34 @@ needs nothing from this list.
 
 from stayfixed.doctor.checks import run_checks
 from stayfixed.doctor.model import (
+    NO_CONFIG_SKIP,
     OK,
     RED,
     SKIP,
     STATUSES,
     WARN,
     Check,
-    Claims,
     Context,
     Contribution,
+    MachineUnread,
     Row,
     Status,
-    Wording,
+    configured,
 )
 
 __all__ = [
+    "NO_CONFIG_SKIP",
     "OK",
     "RED",
     "SKIP",
     "STATUSES",
     "WARN",
     "Check",
-    "Claims",
     "Context",
     "Contribution",
+    "MachineUnread",
     "Row",
     "Status",
-    "Wording",
+    "configured",
     "run_checks",
 ]

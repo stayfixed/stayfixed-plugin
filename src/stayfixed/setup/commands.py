@@ -11,23 +11,24 @@ forbids a test from touching the developer's real `~/.claude` or `~/.config/stay
 command whose only mode writes to the real ones could not be tested at all. Both default to the
 real paths, exactly as `--root` defaults to the current directory elsewhere in this CLI.
 
-`--machine` is **not** gated behind an interactive shell here, unlike `attach`/`detach`'s. That
-gate is about a flag that decides which overlay a *read* trusts; `setup` is the command that
-*writes* the machine file in the first place, so gating its own `--machine` would refuse the
-very thing this command exists to do, on every non-interactive run — including every scripted
-check of the CLI's exit codes. Scoped to `attach`/`detach` on purpose, and left there.
+`--approval-boundary` is a third thing, and the one that writes nothing: it prints the deny rule and
+the sandbox settings that keep an agent's shell out of the trust record's directory, which are the
+harness's to enforce and the person's to set (`trust.boundary` says why stayfixed sets none of
+them), so it runs alone.
 """
 
 from __future__ import annotations
 
 import argparse
+import re
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from stayfixed import fsops
 from stayfixed.areas import SubParsers
-from stayfixed.command import HOME_HELP, SETUP_MACHINE_HELP, SETUP_ROOT_HELP
+from stayfixed.command import HOME_HELP, SETUP_MACHINE_HELP, SETUP_ROOT_HELP, grammar
 from stayfixed.errors import Failure, Refusal
+from stayfixed.presets import DEFAULT_PRESET
 from stayfixed.printed import quoted
 from stayfixed.result import Result
 from stayfixed.runner import subprocess_runner
@@ -42,11 +43,37 @@ from stayfixed.runner import subprocess_runner
 # `hooks.py` files are), so a module-scope import here does not reach the clean-interpreter
 # `discover()` that `tests/boundaries/test_discovery.py` holds `hooks.py` to.
 
-_BOTH_MODES = (
-    "--git-hooks installs a hook into one repository; --preset writes machine-level files. "
-    "A single run has one exit code to report, so it does only one of the two — run them "
-    "separately"
+# `--git-hooks` installs a hook into one repository and does nothing of machine setup's, so a flag
+# that asks machine setup to do something has no run to belong to beside it: `--preset` was
+# refused, and `--overlay` was dropped, exit 0, the hook installed, for a person who asked for
+# both. Refused alike. `--home` and `--machine` say only where machine setup
+# would write, ask nothing done, and are ignored here, as `docs/cli.md` says.
+_HOOKS_ALONE = (
+    "--git-hooks installs a hook into one repository and does nothing of machine setup's, so it "
+    "takes no --preset, --overlay or --plugin; run `stayfixed setup` with those separately"
 )
+# `--uninstall` removes the hook `--git-hooks` installed, and means nothing to machine setup: on
+# its own it was dropped and the machine setup ran, exit 0, for a person who asked for a hook to be
+# removed. Refused before anything is written, naming the flag that gives it a meaning.
+_UNINSTALL_ALONE = (
+    "--uninstall removes the commit-message hook and is taken only with --git-hooks; run "
+    "`stayfixed setup --git-hooks --uninstall` to remove it, and nothing was written"
+)
+# `--root` names the repository `--git-hooks` installs into, and machine setup reads no repository:
+# it took the flag, read nothing of it and configured the machine, exit 0, for a person who named a
+# repository. Refused before anything is written, naming the flag that gives it a meaning.
+_ROOT_ALONE = (
+    "--root names the repository --git-hooks installs into, and machine setup reads no "
+    "repository; run `stayfixed setup --git-hooks --root PATH` for the hook, or drop --root, "
+    "and nothing was written"
+)
+
+
+# A plugin name as `setup --plugin` takes it, joined to the preset's marketplace into one argv
+# element: led by a letter or a digit, so it cannot be read as an option, and nothing that could
+# reach past the name. The rule in words is the parser's refusal, which never quotes the value.
+PLUGIN_NAME = re.compile(r"\A[a-z0-9][a-z0-9-]*\Z")
+PLUGIN_RULE = "not a plugin name: lowercase ASCII letters, digits and `-`, led by a letter or digit"
 
 
 def _root(given: str) -> Path:
@@ -64,7 +91,7 @@ def _root(given: str) -> Path:
 def run_git_hooks(args: argparse.Namespace) -> Result:
     from stayfixed.guards.api import Found, install, uninstall
 
-    root = _root(args.root)
+    root = _root(args.root or ".")
     # Each path is git's answer, from a `core.hooksPath` the repository sets or under the name a
     # submodule's `.gitmodules` chose, so each is printed through `printed.quoted`, as the
     # refusals print it; `--json` carries it as it is.
@@ -105,31 +132,55 @@ def run_git_hooks(args: argparse.Namespace) -> Result:
     return Result(summary, install_data)
 
 
-NO_MACHINE_HOME = (
-    "the password database lists no home directory for this user, so there is no default "
-    "machine configuration file; pass --machine PATH to write one, which no hook reads"
-)
-# `--home`'s default is `HOME`, and an empty one names no home (`config.machine.homes_agree`), where
-# `Path.home` answers `/`: this command once ended in an internal error creating `/.config`, or,
-# given `--machine`, wrote that file and then refused to write `/.claude/settings.json`. Said
+# `--home`'s default is `HOME`, and an empty one names no home (`config.machine.owner_home`), where
+# `Path.home` answers `/`: this command once ended in an internal error creating `/.config`. Said
 # before anything is written.
 EMPTY_HOME = (
-    "HOME is empty, so it names no home directory and there is no default for --home; set HOME "
-    "to your home directory, or pass --home PATH"
+    "HOME names no home directory, so there is no default for --home or --machine; set HOME "
+    "to your home directory, or pass --home PATH and --machine PATH"
+)
+# `--approval-boundary` writes nothing, so a flag that names something to write has no run to
+# belong to: refused rather than dropped, since a person who typed it expects it done. `--home`
+# and `--machine` name files too, and are taken: the advice names the user settings
+# file and the trust record's directory as they would be written. `--uninstall` was taken and
+# dropped, exit 0, for a person who asked for a hook to be removed. `--root` is taken and unread:
+# it says only where `--git-hooks` acts, which is refused here.
+_ADVICE_ALONE = (
+    "--approval-boundary prints what to set and writes nothing, so it takes no --preset, "
+    "--overlay, --plugin, --git-hooks or --uninstall; run `stayfixed setup` with those separately"
+)
+# What `--approval-boundary` prints: the deny rule over the trust record's directory and the user
+# settings file it belongs in, the setting that turns the sandbox on, and the managed settings that
+# keep a repository from turning it off (`trust.boundary` says where each was measured).
+BOUNDARY_ADVICE = (
+    "setup wrote nothing; an approval holds against repository bytes, and against an agent only "
+    "while the agent's shell cannot write the trust record, which Claude Code's sandbox stops "
+    "and stayfixed does not check: add {rules} to permissions.deny in {settings} and set "
+    "{sandbox} there, and, since a repository's own settings can turn that sandbox off, set "
+    "{enforcing} in {managed}, a file only an administrator writes"
 )
 
 
 def run_setup(args: argparse.Namespace) -> Result:
+    if args.approval_boundary:
+        named = (args.preset, args.overlay, args.plugin)
+        switched = (args.git_hooks, args.uninstall)
+        if any(switched) or any(value is not None for value in named):
+            raise Refusal(_ADVICE_ALONE)
+        return run_boundary_advice(args)
     if args.git_hooks:
-        if args.preset is not None:
-            raise Refusal(_BOTH_MODES)
+        if args.preset is not None or args.overlay is not None or args.plugin is not None:
+            raise Refusal(_HOOKS_ALONE)
         return run_git_hooks(args)
+    if args.uninstall:
+        raise Refusal(_UNINSTALL_ALONE)
+    if args.root is not None:
+        raise Refusal(_ROOT_ALONE)
 
-    from stayfixed.config.machine import home_is_empty, homes_agree, machine_config_path
     from stayfixed.setup.run import setup
 
     # The file every *reader* of it reads (`config.loader.load`, `config.overlay.overlay_root`,
-    # `memory.trust._trust_file`), which no variable moves. This command once took the `isatty`
+    # `trust.record.record_path`), under `HOME` alone. This command once took the `isatty`
     # sniff there: with `XDG_CONFIG_HOME=/xdg`, an owner running `stayfixed setup` in their own
     # shell wrote `/xdg/stayfixed/config.toml`, got exit 0, and every reader then said "no overlay
     # root is recorded in the machine configuration; run `stayfixed setup`". `--machine` itself is
@@ -138,23 +189,14 @@ def run_setup(args: argparse.Namespace) -> Result:
     #
     # Resolved here rather than in `register()`, so that `stayfixed setup --help` prints the
     # sentence and not whichever home directory the parser happened to be built under.
-    if args.home is None and home_is_empty():
-        raise Failure(EMPTY_HOME)
-    home = Path.home() if args.home is None else Path(args.home).expanduser()
-    machine = machine_config_path() if args.machine is None else Path(args.machine).expanduser()
-    if machine is None:
-        # Off `--machine`, the file is under the home the password database records, and this
-        # user has none there; a file put under `HOME` instead would be one no hook reads.
-        raise Failure(NO_MACHINE_HOME)
+    home, machine = _home_and_machine(args)
     report = setup(
-        args.preset or "recommended",
+        args.preset or DEFAULT_PRESET,
         home=home,
         machine=machine,
         runner=subprocess_runner(),
-        yes=args.yes,
         overlay=args.overlay,
-        project_root=_root(args.root),
-        settings=Path(args.settings).expanduser() if args.settings else None,
+        plugins=args.plugin or (),
     )
     data = {
         "machine_written": report.machine_written,
@@ -164,17 +206,9 @@ def run_setup(args: argparse.Namespace) -> Result:
         "overlay": str(report.overlay) if report.overlay is not None else None,
         "notes": list(report.notes),
     }
-    # Where `HOME` is not the database's home, the file is not where the person may look for it,
-    # so the line says which home it went under (`config.machine`'s docstring says why).
-    under = (
-        ", under the home the password database records for this user rather than HOME, "
-        "because that is where a hook reads it"
-        if args.machine is None and not homes_agree()
-        else ""
-    )
     summary = "; ".join(
         (
-            f"machine configuration written to {machine}{under}",
+            f"machine configuration written to {machine}",
             f"{len(report.plugins_installed)} plugin(s) installed",
             "deny rules merged" if report.deny_written else "deny rules unchanged",
             "stayfixed is on PATH" if report.cli_on_path else "stayfixed is not on PATH",
@@ -187,40 +221,94 @@ def run_setup(args: argparse.Namespace) -> Result:
     return Result(summary, data)
 
 
-def register(groups: SubParsers) -> None:
+def _home_and_machine(args: argparse.Namespace) -> tuple[Path, Path]:
+    """The home the user settings file lies under and the machine file, as `--home` and
+    `--machine` name them or by default, or the failure for a machine that names neither."""
+    from stayfixed.config.machine import machine_config_path, owner_home
+
+    home = owner_home() if args.home is None else Path(args.home).expanduser()
+    machine = machine_config_path() if args.machine is None else Path(args.machine).expanduser()
+    if home is None or machine is None:
+        raise Failure(EMPTY_HOME)
+    return home, machine
+
+
+def run_boundary_advice(args: argparse.Namespace) -> Result:
+    """`setup --approval-boundary`: `BOUNDARY_ADVICE` for the trust record beside the machine file
+    and the user settings file under the home, both as `setup` would write them; writes nothing.
+
+    Both are printed absolute: the rule for the reason `record_deny_rules` gives, and the file so
+    that a person who opens it from another directory opens the one meant."""
     from stayfixed.setup.machine import USER_SETTINGS
+    from stayfixed.trust.api import (
+        ENFORCING_SETTINGS,
+        SANDBOX_ON,
+        managed_named,
+        record_deny_rules,
+        record_path,
+    )
+
+    home, machine = _home_and_machine(args)
+    # Never `None` beside a machine file, which `_home_and_machine` always names.
+    record = cast(Path, record_path(machine))
+    try:
+        rules = record_deny_rules(record)
+    except OSError as exc:
+        # `fsops.resolved` meets a symbolic-link loop in the directory as an `OSError` on every
+        # interpreter, which would otherwise end in `internal error`.
+        raise Refusal(
+            f"{quoted(str(record.parent))} cannot be checked ({fsops.said(exc)}), so no rule "
+            "for it can be advised"
+        ) from exc
+    settings = (home / USER_SETTINGS).absolute()
+    summary = BOUNDARY_ADVICE.format(
+        rules=" and ".join(rules),
+        settings=settings,
+        sandbox=SANDBOX_ON,
+        enforcing=ENFORCING_SETTINGS,
+        managed=managed_named(),
+    )
+    data = {"deny_rules": list(rules), "settings": str(settings), "managed": managed_named()}
+    return Result(summary, data)
+
+
+def register(groups: SubParsers) -> None:
 
     setup = groups.add_parser("setup", help="configure this machine from a preset")
     setup.add_argument(
         "--preset", default=None, help="the preset to install (default: recommended)"
     )
-    setup.add_argument(
-        "--yes",
-        action="store_true",
-        help=(
-            "confirm the one irreversible act: creating an overlay repository on GitHub with "
-            "--overlay create:<owner>/<name>. Nothing else asks"
-        ),
-    )
     # Both defaults are `None` and are resolved in `run_setup`. A path computed here is computed
     # when the parser is built, which is every run of every command — and printed by
     # `stayfixed setup --help`, where it was the developer's own home directory.
     setup.add_argument("--home", default=None, help=HOME_HELP)
-    setup.add_argument(
-        "--settings",
-        default=None,
-        help=(
-            f"write the user-scope settings file here instead of <home>/{USER_SETTINGS}, "
-            "for a dotfiles layout that links that file into another tree"
-        ),
-    )
     setup.add_argument("--machine", default=None, help=SETUP_MACHINE_HELP)
     setup.add_argument(
         "--overlay",
         default=None,
         help=(
-            "record an existing overlay by path, or create one with "
-            "create:<owner>/<name> (asks GitHub for a private repository from the template)"
+            "record an existing overlay by path, render one at a path that names nothing, or "
+            "create one with create:<owner>/<name> (asks GitHub for a private repository from "
+            "the template)"
+        ),
+    )
+    setup.add_argument(
+        "--plugin",
+        action="append",
+        default=None,
+        type=grammar(PLUGIN_NAME, PLUGIN_RULE),
+        metavar="NAME",
+        help=(
+            "install this plugin from the marketplace the preset names for each harness; once "
+            "per plugin. Without it no plugin is installed"
+        ),
+    )
+    setup.add_argument(
+        "--approval-boundary",
+        action="store_true",
+        help=(
+            "print the deny rule and the sandbox settings that keep an agent's shell out of the "
+            "trust record's directory, and write nothing"
         ),
     )
     setup.add_argument(
@@ -233,5 +321,6 @@ def register(groups: SubParsers) -> None:
         action="store_true",
         help="with --git-hooks, remove the hook and restore what it chained to",
     )
-    setup.add_argument("--root", default=".", help=SETUP_ROOT_HELP)
+    # `None` and not `.`, so machine setup can tell a `--root` it was handed from one it was not.
+    setup.add_argument("--root", default=None, help=SETUP_ROOT_HELP)
     setup.set_defaults(func=run_setup)

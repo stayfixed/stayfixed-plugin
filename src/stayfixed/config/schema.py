@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from typing import ClassVar
 
 # The future import above is load-bearing for the loader: it turns every annotation here into
-# a string, which `config.loader._schema_types` resolves with `typing.get_type_hints` to decide
+# a string, which `config.reading.schema_types` resolves with `typing.get_type_hints` to decide
 # how to coerce a value. Every name an annotation uses must stay resolvable from this module's
 # globals at runtime, so a type imported only under `TYPE_CHECKING` would break the loader.
 
@@ -58,13 +58,22 @@ BUILTIN_GATES = ("docs", "bugs", "plan", "commit", "trail")
 # The configuration check: a gate runner's other verdict, and never a gate's name.
 CONFIG_CHECK = "config"
 # The memory modes, each spelled here and nowhere else, since the areas that read the store branch
-# on them: notes in the private overlay, the one mode `attach` binds; notes committed with the
-# code; and notes on this machine only, under `.stayfixed/local/`.
+# on them: the agent harness's own memory, where stayfixed delivers nothing, which is the mode
+# where no layer chooses one; notes in the private overlay, the one mode `attach` binds; notes
+# committed with the code; and notes on this machine only, under `.stayfixed/local/`.
+HARNESS_MODE = "harness"
 OVERLAY_MODE = "overlay"
 IN_REPO_MODE = "in-repo"
 LOCAL_ONLY_MODE = "local-only"
-MEMORY_MODES = (OVERLAY_MODE, IN_REPO_MODE, LOCAL_ONLY_MODE)
+MEMORY_MODES = (HARNESS_MODE, OVERLAY_MODE, IN_REPO_MODE, LOCAL_ONLY_MODE)
 CI_MODES = ("reusable", "uvx", "none")
+# A commit type, the word a conventional subject starts with (`feat` in `feat(scope): …`), spelled
+# once for `init`'s `--commit-type` grammar and `assess`'s commit-vocabulary probe, so the type a
+# project lists is the type the probe reads off a subject; and the same rule in words for the
+# parser's refusal.
+COMMIT_TYPE_WORD = "[a-z]+"
+COMMIT_TYPE = re.compile(rf"\A{COMMIT_TYPE_WORD}\Z")
+COMMIT_TYPE_RULE = "lowercase ASCII letters"
 
 
 @dataclass(frozen=True)
@@ -119,14 +128,20 @@ class Paths:
 
 @dataclass(frozen=True)
 class Memory:
-    mode: str
+    """`[memory]`. `mode` is `HARNESS_MODE` where no layer sets it: the preset chooses no store, so
+    a repository that never chose one keeps the harness's own memory."""
+
     groups: tuple[str, ...]
     index_extra: tuple[str, ...]
+    mode: str = HARNESS_MODE
 
 
 @dataclass(frozen=True)
 class Budgets:
-    """A project may lower a budget below the preset and never raise it."""
+    """The preset's budgets and the ones a layer set (`configured`): the base branch's
+    `stayfixed.toml` sets a gate's budget and the owner's machine file a session's, either way
+    above the preset or below it. What a pull request may do to a gate's budget is
+    `assess.rule`'s to judge, against the base's effective value."""
 
     NAMES: ClassVar[tuple[str, ...]] = (
         "agents_md_lines",
@@ -144,16 +159,12 @@ class Budgets:
     configured: dict[str, int] = field(default_factory=dict)
 
     def effective(self, name: str) -> int:
+        """The configured value when a layer set one, else the preset's."""
         if name not in self.NAMES:
             raise KeyError(name)
-        value = self.preset[name]
         if name in self.configured:
-            value = min(value, self.configured[name])
-        return value
-
-    @property
-    def overrides(self) -> dict[str, int]:
-        return {k: v for k, v in self.configured.items() if v != self.preset.get(k)}
+            return self.configured[name]
+        return self.preset[name]
 
 
 @dataclass(frozen=True)
@@ -220,8 +231,6 @@ class CommitMessages:
 class Personal:
     """Machine-level parameters; never read from a repository."""
 
-    reply_language: str
-    artifact_language: str
     preset: str
 
 

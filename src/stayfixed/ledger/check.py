@@ -17,7 +17,8 @@ from typing import TYPE_CHECKING
 
 from stayfixed import fsops
 from stayfixed.committed import committed_document, repository_prefix
-from stayfixed.config.loader import CONFIG_FILE, NOT_UTF8, loads
+from stayfixed.config.loader import CONFIG_FILE, loads
+from stayfixed.config.reading import NOT_UTF8
 from stayfixed.errors import Failure, Refusal
 from stayfixed.findings import Finding, listed
 from stayfixed.gitenv import ForkUnknown, fork_points, git_run
@@ -26,6 +27,7 @@ from stayfixed.ledger.entries import (
     Entry,
     LedgerError,
     entry_dir,
+    entry_paths,
     parse_entry,
     read_ledger_text,
 )
@@ -395,7 +397,7 @@ def register_gate(
         carried = _base_ledger(root, register, base, at)
     if uninitialised(root, register):
         return _unledgered(root, config, register, carried)
-    ids, schema = register.ids, register.schema
+    schema = register.schema
     directory = entry_dir(root, register)
     index_name = register.index
     # First: a deleted entry is the most structural finding a ledger can have.
@@ -408,7 +410,7 @@ def register_gate(
     texts: dict[str, str] = {}
     required = set(register.evidence_boundary_for)
     restated = _body_state_bullet(register)
-    for path in sorted(directory.glob(f"{ids.prefix}-*.md")):
+    for path in entry_paths(root, register):
         # Parsed against the repo-relative path, which is the one every message here names:
         # these are printed by CI, where an absolute path is a runner's scratch directory.
         relative = path.relative_to(root).as_posix()

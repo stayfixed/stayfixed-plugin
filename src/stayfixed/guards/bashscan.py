@@ -130,6 +130,7 @@ from __future__ import annotations
 
 import re
 import shlex
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import NamedTuple
 
@@ -194,10 +195,8 @@ _WORD_BOUNDARY = frozenset({";", "&", "|", "(", ")", "<", ">"})
 _ASSIGNMENT = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]*=")
 # `env pytest`: a bare wrapper token, not the command. Deliberately not a general argv
 # resolver: `env` and `uv run` (`guards/uvrun.py`) are the only launchers read through, and
-# `poetry run`, `npx`, `sudo` and `time` are not. Under-reporting stays the safe direction for
-# the warn-only callers this exists for -- an unrecognised launcher just leaves a note
-# undelivered, never wrongly delivered -- so a launcher is added only when a real shape has been
-# reproduced, not speculatively; once one is read at all, its tables are its whole option list.
+# `poetry run`, `npx`, `sudo` and `time` are not, unless they stand behind `uv run`, where every
+# word before the first a runner adapter recognises is the launcher's.
 _SINGLE_WRAPPERS = frozenset({"env"})
 
 
@@ -421,64 +420,6 @@ def _scan_lines(
     return out, found, quote
 
 
-def heredoc_body_end(text: str, index: int) -> int | None:
-    """The offset just past the body of the heredoc whose redirect begins at ``index``, or
-    ``None`` when no redirect begins there.
-
-    PORTED AHEAD OF ITS CONSUMER: nothing in `src/` calls this yet, and it is not on
-    `guards/api.py`. It is here for a caller that walks command substitutions -- a `$(...)`
-    scan of its own -- and the change that adds one is where it acquires a production caller.
-    Until then `tests/guards/test_bashscan.py` is what holds its contract, so the contract is
-    stated here in full rather than left to be reconstructed from a caller that does not
-    exist.
-
-    The need it answers is the one place `scan_heredocs` above deliberately does not look.
-    `git commit -m "$(cat <<'EOF'` / body / `EOF` / `)"` puts the whole substitution inside a
-    double-quoted string, so `_quoted_spans` reports that `<<'EOF'` as text and no heredoc is
-    found -- correct for its own question, since a `<<TAG` inside a string really is not a
-    redirect, and the false-open that rule exists to prevent (module docstring) is not
-    something to trade away. But bash parses a `$(...)` as a command in its OWN right, and a
-    heredoc inside one is a real redirect regardless of the quoting outside it.
-
-    What such a caller needs from that is not the body's text -- it already has it -- but
-    where the body ENDS, so it can step over it. A body is DATA to the shell's parser, the
-    same rule `scan_heredocs` already states for quote state: an apostrophe in a body opens
-    nothing, and a paren in one nests nothing. Without this, a substitution scan's own
-    delimiter walk reads the apostrophe in an ordinary English possessive as an unclosed
-    quote, swallows the `)` that closed the substitution, and hands its caller a command it
-    calls unparseable -- which was measured on the guard this was ported from.
-
-    A REDIRECT WHOSE TERMINATOR LINE IS NOT THERE answers ``None`` -- "nothing to step
-    over" -- rather than running to the end of ``text``, and that is the opposite of what
-    `scan_heredocs` does with an unterminated body. The asymmetry is the point, and it was
-    measured rather than reasoned: a caller of this scans text `prepare` has ALREADY
-    stripped, so much the commonest way to reach a `<<TAG` with no terminator is a heredoc
-    that was found and removed normally, leaving its header behind (`X=$(bash <<'EOF'` /
-    body / `EOF` / `)` strips to `X=$(bash <<'EOF'` / `)`). Running to the end of the text
-    there swallows the `)` that closes the substitution and makes the whole command
-    unparseable -- a new false denial of exactly the kind this exists to remove, and three
-    commands measured it. Not skipping costs nothing: the body's characters are then read as
-    ordinary text, which is what such a scan did before this function existed.
-
-    `<<<` (a herestring, which has no body) is excluded by `_HEREDOC`'s own `(?!<)`, and its
-    second and third `<` by the same pattern's own lookbehind, so neither is mistaken for a
-    redirect here.
-    """
-    match = _HEREDOC.match(text, index)
-    if match is None:
-        return None
-    tag = match.group("quoted_tag") or match.group("tag")
-    position = text.find("\n", match.end())
-    while position != -1:
-        position += 1
-        end = text.find("\n", position)
-        line = text[position:] if end == -1 else text[position:end]
-        if line.strip() == tag:
-            return len(text) if end == -1 else end + 1
-        position = end
-    return None
-
-
 def _newlines_to_separators(text: str) -> str:
     """``text`` with every unquoted, unescaped newline rewritten to `;`.
 
@@ -668,26 +609,6 @@ def prepare(command: str, *, keep_unquoted_bodies: bool = True) -> tuple[str, li
     return _newlines_to_separators(text), heredocs
 
 
-def strip_heredocs(command: str) -> str:
-    """`prepare`'s text half: comments and quoted heredoc bodies gone, everything else kept.
-
-    PORTED AHEAD OF ITS CONSUMER, like `heredoc_body_end` above: nothing in `src/` calls it
-    and it is not on `guards/api.py`, so its only callers today are in
-    `tests/guards/test_bashscan.py`. It is the convenience shape for a caller that wants the
-    prepared TEXT and no heredoc list -- a path-matching or token check rather than a
-    program-level one -- and the change that adds such a check is where it acquires a production
-    caller.
-
-    Note what the name does NOT promise: an UNQUOTED heredoc body is not removed. A caller
-    using this to ignore a command quoted inside a document must quote the delimiter
-    (`<<'EOF'`), which is what a document fixture should do anyway -- an unquoted delimiter
-    means the shell expands the body, and a scanner that cannot see expanded text cannot
-    judge it.
-    """
-
-    return prepare(command)[0]
-
-
 def tokenize(command: str, *, keep_unquoted_bodies: bool = True) -> list[str] | None:
     """Shell tokens with redirects/separators preserved; ``None`` when unparseable.
 
@@ -784,44 +705,87 @@ def segments(tokens: list[str]) -> list[list[str]]:
     return result
 
 
-def command_words(segment: list[str], *, modules_as_programs: bool = False) -> list[str]:
-    """This segment's own command and arguments, with any leading environment-assignment
-    tokens and the wrapper prefixes -- `_SINGLE_WRAPPERS`, and `uv run` with uv's options --
-    stripped off the front, repeatedly, so `env FOO=1 pytest` and `FOO=1 uv run --locked
-    pytest` both resolve to `pytest` as the real command, not to the assignment or the
-    launcher.
+class Launch(NamedTuple):
+    """A segment read the way `read_launch` reads it, every word in one part.
 
-    `Path(segment[0]).name` alone missed `PYTHONPATH=src pytest` and `FOO=1 BAR=2 pytest`
-    entirely, and neither is contrived: an assignment prefix is the ordinary way to run a
-    suite against a checkout that has no venv of its own.
-
-    A `uv run` whose next word is a module or a script (`-m`, `--script`) is left whole,
-    since that word names no program, unless `modules_as_programs` asks for it: a caller
-    asking which runner ran, as the red-run hint does, reads `uv run -m pytest` as `pytest`.
-
-    THE UNDER-REPORT IS DOCUMENTED, not accidental: a `uv` command with an option outside
-    uv's tables (`uv run --frobnicate pytest`), or one that is not `uv run`, is left whole and
-    its program is `uv`, and no other launcher is recognised at all. Under-reporting is the
-    safe direction for the warn-only callers this serves -- an unrecognised launcher leaves a
-    note undelivered rather than wrongly delivered -- so a launcher is added only when a real
-    shape has been reproduced.
+    `assignments` is every `NAME=value` word the walk read as one, in order: before a launcher,
+    bare or after `env`. `launcher` is the words of each launcher read through, in order -- `uv`,
+    every word up to the command it launches, an `env` and its assignments among them.
+    `command` is the rest, what `command_words` returns.
     """
 
+    assignments: tuple[str, ...]
+    launcher: tuple[str, ...]
+    command: tuple[str, ...]
+
+
+def read_launch(
+    segment: Sequence[str], recognises: Callable[[Sequence[str]], bool] | None = None
+) -> Launch:
+    """`segment` split into its assignments, its launcher's words and its command, by the one
+    walk `command_words` documents.
+
+    A caller that runs the command, and not only names its program, needs every part: the
+    assignments go into the environment of what it starts, since nothing but a shell reads them
+    from an argv, and the launcher's words are what it may keep in front of the program.
+    """
+    assigned: list[str] = []
+    launcher: list[str] = []
     index = 0
     while index < len(segment):
         token = segment[index]
         if _ASSIGNMENT.match(token):
+            assigned.append(token)
             index += 1
             continue
         name = Path(token).name
-        if uvrun.is_launcher(name):
-            launched = uvrun.past_run(segment, index + 1, modules_as_programs=modules_as_programs)
+        if recognises is not None and uvrun.is_launcher(name):
+            launched = _launched(segment, index, recognises)
             if launched is None:
                 break
+            launcher.extend(segment[index:launched])
             index = launched
             continue
         if name in _SINGLE_WRAPPERS:
             index += 1
             continue
         break
-    return segment[index:]
+    return Launch(tuple(assigned), tuple(launcher), tuple(segment[index:]))
+
+
+def _launched(
+    segment: Sequence[str], index: int, recognises: Callable[[Sequence[str]], bool]
+) -> int | None:
+    """Where the command that the `uv` at `index` launches starts: the first word after `run`
+    that `recognises` reads a command from; `None` where no `run` follows or no such word does."""
+    start = uvrun.past_run(segment, index + 1)
+    if start is None:
+        return None
+    for at in range(start, len(segment)):
+        if recognises(segment[at:]):
+            return at
+    return None
+
+
+def command_words(
+    segment: list[str], recognises: Callable[[Sequence[str]], bool] | None = None
+) -> list[str]:
+    """This segment's own command and arguments, with any leading environment-assignment
+    tokens and the wrapper prefixes -- `_SINGLE_WRAPPERS`, and, given `recognises`, `uv run`
+    with every word up to the first that `recognises` reads a command from -- stripped off the
+    front, repeatedly, so `env FOO=1 pytest` and `FOO=1 uv run --locked pytest` both resolve to
+    `pytest` as the real command, not to the assignment or the launcher.
+
+    `Path(segment[0]).name` alone missed `PYTHONPATH=src pytest` and `FOO=1 BAR=2 pytest`
+    entirely, and neither is contrived: an assignment prefix is the ordinary way to run a
+    suite against a checkout that has no venv of its own.
+
+    THE BOUND IS DOCUMENTED, not accidental: a `uv` command in which `recognises` reads no
+    command, or one with no `run`, is left whole and its program is `uv`, and no other launcher
+    is read through. Behind `uv run` every word before the first that `recognises` reads a
+    command from is the launcher's, so a runner named as a uv option's value or as another
+    program's argument (`uv run --with pytest echo`, `uv run grep -m pytest x`) is read as the
+    command, and a warn-only caller delivers its note to a run of no test.
+    """
+
+    return list(read_launch(segment, recognises).command)

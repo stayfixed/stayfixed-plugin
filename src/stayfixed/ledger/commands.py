@@ -1,4 +1,4 @@
-"""The `bugs` group: `new`, `index [--check]`, `check`, `renumber OLD NEW`."""
+"""The `bugs` group: `new`, `index [--check]`, `check`, `regressions`, `renumber OLD NEW`."""
 
 from __future__ import annotations
 
@@ -21,6 +21,9 @@ UNWRITTEN = (
     "{index} could not be written ({reason}); once it can be, run `stayfixed {name} index` again"
 )
 _INERT = "nothing to check: no ledger directory and no generated index"
+# What `regressions` says when no fixed entry carries a `regression` to run, and after its runs.
+NO_REGRESSIONS = "nothing to run: no fixed entry carries a regression"
+REGRESSIONS_RAN = "{ran} regression(s), {not_proved} not proved"
 BASE_HELP = (
     "also fail when a commit HEAD forked from this base ref at carries the ledger and the tree "
     "has none, or carries an entry the tree lacks, so a change that deletes the ledger or an "
@@ -90,6 +93,37 @@ def run_bugs_check(args: argparse.Namespace) -> Result:
     return Result(f"FAIL: {len(found)} ledger problem(s): {labels(found)}", data, exit_code=1)
 
 
+def run_bugs_regressions(args: argparse.Namespace) -> Result:
+    import sys
+
+    from stayfixed.ledger.regressions import regressions
+    from stayfixed.prove.api import Verdict, line
+
+    root, config = root_and_config(args)
+    # The runner's output goes to standard error in both forms, as a custom gate's does, so that
+    # under `--json` standard output holds the one object.
+    ran = regressions(root, config, echo=sys.stderr)
+    rows = []
+    lines = []
+    for entry, receipt in ran:
+        said = line(receipt)
+        rows.append(
+            {
+                "id": entry.id,
+                "path": entry.path.as_posix(),
+                "verdict": str(receipt.verdict),
+                "line": said,
+            }
+        )
+        lines.append(f"{printable(entry.id)}: {said}")
+    not_proved = sum(1 for _, receipt in ran if receipt.verdict is not Verdict.PROVED)
+    data = {"regressions": rows, "not_proved": not_proved}
+    if not ran:
+        return Result(NO_REGRESSIONS, data)
+    lines.append(REGRESSIONS_RAN.format(ran=len(ran), not_proved=not_proved))
+    return Result("\n".join(lines), data, exit_code=1 if not_proved else 0)
+
+
 def run_bugs_new(args: argparse.Namespace) -> Result:
     from stayfixed.ledger.write import file_entry
 
@@ -121,19 +155,27 @@ def run_bugs_renumber(args: argparse.Namespace) -> Result:
         "void": void,
         "unswept": [asdict(u) for u in result.unswept],
         "moved": result.moved,
+        "lists_naming_old": list(result.lists_naming_old),
     }
     if not result.moved:
         return Result(f"{args.old} was already moved to {args.new}; nothing to do", data)
+    naming = ""
+    if result.lists_naming_old:
+        naming = (
+            f"; {len(result.lists_naming_old)} entry file(s) still name {args.old} in a list left "
+            f"as written, which may need editing by hand "
+            f"({listed([printable(path) for path in result.lists_naming_old])})"
+        )
     if result.unswept:
         return Result(
             f"FAIL: {args.old} moved to {args.new}, but {len(result.unswept)} file(s) still "
             f"reference {args.old} and must be fixed by hand "
             f"({listed([printable(u.path) for u in result.unswept])}); "
-            f"a void pointer remains at {void}",
+            f"a void pointer remains at {void}{naming}",
             data,
             exit_code=1,
         )
-    return Result(f"{args.old} -> {args.new}; a void pointer remains at {void}", data)
+    return Result(f"{args.old} -> {args.new}; a void pointer remains at {void}{naming}", data)
 
 
 def register(groups: SubParsers) -> None:
@@ -156,6 +198,12 @@ def register(groups: SubParsers) -> None:
     )
     check.add_argument("--base", default=None, help=BASE_HELP)
     check.set_defaults(func=run_bugs_check)
+    regressions = common_flags(
+        sub.add_parser(
+            "regressions", help="run each fixed entry's regression and say what its runner proved"
+        )
+    )
+    regressions.set_defaults(func=run_bugs_regressions)
     renumber = common_flags(sub.add_parser("renumber", help="move an entry to a free identifier"))
     renumber.add_argument("old")
     renumber.add_argument("new")

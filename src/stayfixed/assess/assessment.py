@@ -42,6 +42,7 @@ from stayfixed.assess.report import count_cell, gate_row
 from stayfixed.assess.tracked import as_ci_sees, unseen_items
 from stayfixed.config.layout import local_base
 from stayfixed.config.loader import load
+from stayfixed.config.owner import Owner
 from stayfixed.errors import Refusal
 from stayfixed.findings import Severity, listed
 from stayfixed.fsops import UnsafePath, write_within
@@ -57,6 +58,7 @@ UNWRITABLE = (
 NOT_A_FILE = (
     f"refusing to write {ASSESSMENT}: something that is not a file is there; remove it and re-run"
 )
+SUMMARY_LEAD = "assessment:"
 SKIPPED = (
     "not run, as --builtin asked: the custom gate(s) {names}, whose commands this repository "
     "configured; they count toward no total above"
@@ -100,13 +102,19 @@ def _gate_items(gate: Gate, result: GateResult) -> Iterator[Item]:
 
 
 def assess(
-    root: Path, *, machine: Path | None, base: str | None, builtin: bool = False
+    root: Path,
+    *,
+    machine: Path | None,
+    base: str | None,
+    builtin: bool = False,
+    owner: Owner | None = None,
 ) -> Assessment:
     """Every configured gate against `base`, then every probe, over the tree at `root`; with
-    `builtin`, no custom gate: no command the repository configured runs."""
+    `builtin`, no custom gate: no command the repository configured runs. `owner` is the owner's
+    layer the command resolved (`config.loader.loads`' own)."""
     from stayfixed.presets import load_preset
 
-    config = load(root, machine=machine)
+    config = load(root, machine=machine, owner=owner)
     base = base or local_base(config)
     custom = config.gates.custom
     skipped = tuple(name for name in config.gate_names if builtin and name in custom)
@@ -182,7 +190,7 @@ def render(assessment: Assessment) -> str:
     repository chose."""
     failing = assessment.would_fail
     lines = [
-        f"assessment: state {assessment.state}; {len(failing)} of {len(assessment.gates)} "
+        f"{SUMMARY_LEAD} state {assessment.state}; {len(failing)} of {len(assessment.gates)} "
         f"gate(s) would fail if enforced; {len(assessment.items)} item(s); the whole list is in "
         f"{ASSESSMENT}",
         "",

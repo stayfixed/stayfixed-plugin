@@ -12,7 +12,6 @@ from typing import Any
 import stayfixed
 from stayfixed.areas import Registrar, SubParsers, area_modules
 from stayfixed.errors import Failure, Refusal
-from stayfixed.hooks.policy import hook_event_name, refuses_on_internal_error
 from stayfixed.result import Result
 
 # The aliases live in the leaf module every area imports; they are re-exported here because
@@ -36,8 +35,8 @@ def discover_registrars() -> list[Registrar]:
 # Named in every `--help` because the frame accepts it before argparse does (`split_json_flag`),
 # so no command declares it and no command's own help would otherwise mention it.
 JSON_EPILOG = (
-    "--json is accepted anywhere on the line and prints one machine-readable object instead "
-    "of one line."
+    "--json is accepted anywhere on the line before a bare `--` and prints one machine-readable "
+    "object instead of one line."
 )
 
 
@@ -83,8 +82,12 @@ def _finish(groups: SubParsers) -> None:
 
 
 def split_json_flag(argv: list[str]) -> tuple[list[str], bool]:
-    """`--json` is accepted anywhere, so every command carries it without declaring it."""
-    return [arg for arg in argv if arg != "--json"], "--json" in argv
+    """`--json` is accepted anywhere before the first bare `--`, so every command carries it
+    without declaring it. The words after that `--` are a command's own, which another program
+    reads (`stayfixed prove -- runner --json`), so none of them is read or taken here."""
+    cut = argv.index("--") if "--" in argv else len(argv)
+    head = argv[:cut]
+    return [arg for arg in head if arg != "--json"] + argv[cut:], "--json" in head
 
 
 def _report(kind: str, message: str, code: int, as_json: bool) -> int:
@@ -140,6 +143,9 @@ def run(argv: list[str] | None, *, parser: argparse.ArgumentParser) -> int:
     raw = list(sys.argv[1:] if argv is None else argv)
     args_in, as_json = split_json_flag(raw)
     args = parser.parse_args(args_in)
+    # A command whose own output reaches standard output besides its result (`prove`'s teed
+    # report) reads it, to keep standard output one object under `--json`.
+    args.as_json = as_json
     func = getattr(args, "func", None)
     if func is None:
         parser.print_help()
@@ -165,18 +171,14 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _discovery_failed(raw: list[str], exc: BaseException) -> int:
-    """Discovery and the parser build both abort before argparse, so `hook`'s own policy is
-    applied here (the exit-code policy `docs/cli.md#stayfixed-hook-event` documents).
-
-    Exit 2 on `UserPromptSubmit` erases what the user typed, so one later area's bug in its
-    `commands.py` — raised at import, or from the `register()` the parser build calls, or as
-    two areas claiming one group name — must not cost the user their prompt: on a hook
-    invocation the failure degrades open everywhere exit 2 does not block, and refuses only
-    where it does.
+    """Discovery and the parser build both abort before argparse, so `hook`'s own rule is applied
+    here (`docs/cli.md#stayfixed-hook-event`): one area's bug in its `commands.py` — raised at
+    import, or from the `register()` the parser build calls, or as two areas claiming one group
+    name — exits 0 on a hook, since a session never dies of stayfixed's own fault.
     """
     reason = f"stayfixed: internal error: {type(exc).__name__}: {exc}"
-    event = hook_event_name(raw)
-    if event is not None and not refuses_on_internal_error(event):
+    words = [arg for arg in raw if arg != "--json"]
+    if len(words) >= 2 and words[0] == "hook":
         print(f"{reason}; continuing open", file=sys.stderr)
         return 0
     print(reason, file=sys.stderr)
