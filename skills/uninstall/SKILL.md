@@ -1,0 +1,46 @@
+---
+name: uninstall
+description: Remove stayfixed's footprint from a repository, leaving hand-edited files in place and listed. Use when the user asks to uninstall or remove stayfixed from a project.
+---
+
+# Uninstalling
+
+`stayfixed uninstall` removes every file stayfixed wrote whose bytes are still the ones it wrote,
+takes its sections out of files that hold other text, and removes its ledger. A file the user
+edited stays where it is and is listed.
+
+1. If the repository is attached to an overlay, run `stayfixed detach` first. `uninstall`
+   refuses otherwise, and says so.
+2. Run `stayfixed uninstall --dry-run` and relay both reports and every `note:` line. The note
+   about `AGENTS.md` means the real run judges the skeleton after taking stayfixed's section
+   out, so a file the dry run calls edited there may still go.
+3. A `note:` counting files under `.stayfixed/local/` means the real run will refuse. They are
+   the user's notes kept out of git, or a file kept out of git that changed since stayfixed wrote
+   it, and the ignore block this command removes is what keeps them out of it. Relay the count.
+   A file the report lists `skip_modified` there is step 4's question; moving the rest is the
+   user's decision. Never move or delete them yourself.
+4. For each file left in place, ask the user. Add `--force <path>` only for a file they name,
+   with the path exactly as the report prints it. Forcing `AGENTS.md` takes stayfixed's section
+   out of it, never the rest of the file.
+5. If any `--force` was added, run `stayfixed uninstall --dry-run` again with the same flags and
+   relay the new reports before anything is removed.
+6. Run `stayfixed uninstall` with the same flags, and relay both reports and the count of files
+   left in place.
+
+## Rules
+
+- **An exit of 1 removed nothing.** A `REFUSED` section names each artifact and why. Relay it
+  and stop.
+- **An exit of 2 is a refusal, and it may have come part-way through.** Attached, files kept
+  under `.stayfixed/local/` counted before the run, and a `--force` path outside the root come
+  before anything is removed. A file that cannot be removed, or files still under
+  `.stayfixed/local/` after the write-once pass, stop the run part-way: what was removed stays
+  removed, and `stayfixed.toml` and the manifest stay so the next run can finish. Relay it as
+  printed, run `git status` to show the user what changed, and after they deal with the cause run
+  `stayfixed uninstall --dry-run` again.
+- **A refusal saying git ignores files at a place a `[paths]` value chose removed nothing.**
+  Relay it with the files it names. Taking stayfixed's part out of them by hand, or taking that
+  key out of `stayfixed.toml` so the run leaves them in place and lists them, is the user's
+  decision; never do either yourself.
+- **A target printed as `<id>` is one the manifest recorded outside the path grammar.** Relay it
+  as printed, and never look up or guess the path behind it.
