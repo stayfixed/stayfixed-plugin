@@ -57,7 +57,13 @@ from typing import Any
 
 from stayfixed import fsops, tomlout
 from stayfixed.attach import exclude
-from stayfixed.attach.binding import Binding, read_binding, refuse_unless_share_can_exist
+from stayfixed.attach.binding import (
+    NAMED_BY_FILE,
+    Binding,
+    choose_project,
+    read_binding,
+    refuse_unless_share_can_exist,
+)
 from stayfixed.attach.permissions import (
     CODEX_RULES,
     LOCAL_SETTINGS,
@@ -783,6 +789,7 @@ def attach(
     machine: Path | None,
     runner: Runner,
     owner: Owner | None = None,
+    project: str | None = None,
 ) -> Attached:
     """Bind this repository to the overlay, merge the allow rules it grants, render and install
     its executable parts, and compose its notes.
@@ -819,10 +826,11 @@ def attach(
 
     `runner` is keyword-**required** rather than defaulted so that no test can reach a real
     `claude`. `owner` is the owner's layer the command resolved, which the one load
-    takes (`config.loader.loads`' own).
+    takes (`config.loader.loads`' own). `project` is `--project`, which names the project of a
+    repository with no `stayfixed.toml` (`configured`).
     """
     main = main_checkout_of(root)
-    planned = _plan(main, store=store, machine=machine, owner=owner)
+    planned = _plan(main, store=store, machine=machine, owner=owner, project=project)
     return _carry_out(main, planned, machine=machine, runner=runner, owner=owner)
 
 
@@ -848,12 +856,31 @@ def gates(root: Path, config: Config, binding: Binding) -> PermissionDiff:
     return diff
 
 
+def configured(
+    root: Path, project: str | None, *, machine: Path | None, owner: Owner | None
+) -> Config:
+    """The run's one `Config`, its project chosen where the repository has no `stayfixed.toml`
+    (`binding.choose_project`, asked only then). `project` is `--project`, refused beside the
+    file, which names the project already."""
+    chosen: list[str] = []
+
+    def unnamed() -> str:
+        chosen.append(choose_project(root, project, machine=machine))
+        return chosen[0]
+
+    config = command_config(root, machine=machine, owner=owner, unnamed=unnamed)
+    if project is not None and not chosen:
+        raise Refusal(NAMED_BY_FILE)
+    return config
+
+
 def _plan(
     root: Path,
     *,
     store: Path | None,
     machine: Path | None,
     owner: Owner | None,
+    project: str | None,
 ) -> AttachPlan:
     """Every read, decode and check `attach` makes, in the order `attach` enumerates them, and
     nothing written: what it returns is all `_carry_out` may act on. `gates` and `plan_writes` are
@@ -862,7 +889,7 @@ def _plan(
     # One load for the whole run, handed to `read_binding` rather than left for it to make a
     # second of: a `--check` that read two documents reports the wrong thing, while an `attach`
     # that reads two writes under the wrong one.
-    config = command_config(root, machine=machine, owner=owner)
+    config = configured(root, project, machine=machine, owner=owner)
     binding = read_binding(root, store=store, machine=machine, config=config)
     diff = gates(root, config, binding)
     return plan_writes(root, config, binding, diff)
@@ -968,8 +995,9 @@ def _carry_out(
     bound = record(root, binding.project, binding.remote)
     _record_project(binding, bound.origin)
     # The mode, resolved again now that the binding is recorded: the overlay's project layer is
-    # read for a bound checkout only, so a first attach's plan could not see a mode set there.
-    config = command_config(root, machine=machine, owner=owner)
+    # read for a bound checkout only, so a first attach's plan could not see a mode set there. A
+    # repository with no `stayfixed.toml` is named the project just bound (`configured`).
+    config = command_config(root, machine=machine, owner=owner, unnamed=lambda: binding.project)
     memory = config.memory.mode == OVERLAY_MODE
     if memory:
         refuse_unless_share_holds(binding, config)
@@ -1132,7 +1160,12 @@ def _withdraw_plugin(
     each where `held` says that checkout's settings file names it; then read the file again and
     stop with `STILL_NAMED` while a name under either key names a `stayfixed-delivery-`
     marketplace, which needs no id. The file decides, never the exit codes: what must hold before
-    the exclude block goes is that the file names no delivery."""
+    the exclude block goes is that the file names no delivery.
+
+    The calls leave the two keys behind, emptied. A file holding those and nothing else is one the
+    delivery alone filled, and it goes here: kept, it is the trace `git status` shows once the
+    exclude block is gone, in a checkout no global exclude hides it in. A file holding anything
+    more stays as it is."""
     if id is not None:
         plugin = f"{plugin_name(id)}@{marketplace_name(id)}"
         if plugin in held[ENABLED_PLUGINS]:
@@ -1143,6 +1176,12 @@ def _withdraw_plugin(
     left = [key for key, names in named if any(MARKETPLACE_PREFIX in name for name in names)]
     if left:
         raise Failure(STILL_NAMED.format(keys=", ".join(f"`{key}`" for key in left)))
+    document = settings_document(local_document(main))
+    if document and all(
+        key in (ENABLED_PLUGINS, KNOWN_MARKETPLACES) and value == {}
+        for key, value in document.items()
+    ):
+        fsops.remove_within(main, LOCAL_SETTINGS)
 
 
 def _remove_render(directory: Path) -> None:
